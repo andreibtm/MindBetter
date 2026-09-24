@@ -7,17 +7,46 @@ import {
   Brain,
   Check,
   Clock3,
+  Download,
   Link2,
+  Play,
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  Trash2,
+  Trophy,
   X,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  clearMindBetterData,
+  EMPTY_PROGRESS,
+  exportMindBetterData,
+  loadMindBetterData,
+  normalizeAnswer,
+  saveCompletion,
+  saveSession,
+  scoreAnswers,
+  type ProgressRecord,
+  type SessionRecord,
+  type StoredAnswer,
+  type TrainingStage,
+} from "@/lib/memory-storage";
 
-type Stage = "today" | "lesson" | "encode" | "recall" | "results";
+type Stage = "today" | TrainingStage;
 
 type Pair = {
   cue: string;
@@ -55,9 +84,7 @@ const PAIRS: Pair[] = [
   },
 ];
 
-function normalizeAnswer(value: string) {
-  return value.trim().toLocaleLowerCase().replace(/[.,!?;:]+$/g, "");
-}
+const TARGETS = PAIRS.map((pair) => pair.target);
 
 function Brand() {
   return (
@@ -84,8 +111,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
           <Brand />
           <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.035] px-3 py-2 text-xs font-medium text-slate-300">
             <ShieldCheck aria-hidden="true" className="size-4 text-mint" />
-            <span className="hidden sm:inline">Private by design</span>
-            <span className="sm:hidden">Private</span>
+            <span className="hidden sm:inline">Saved on this device</span>
+            <span className="sm:hidden">Saved</span>
           </div>
         </div>
       </header>
@@ -96,14 +123,79 @@ function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Today({ onStart }: { onStart: () => void }) {
+function ConfirmAction({
+  actionLabel,
+  children,
+  description,
+  onConfirm,
+  title,
+}: {
+  actionLabel: string;
+  children: React.ReactNode;
+  description: string;
+  onConfirm: () => void | Promise<void>;
+  title: string;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>{children}</AlertDialogTrigger>
+      <AlertDialogContent className="border-white/10 bg-panel text-white">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription className="text-slate-400">
+            {description}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/10 hover:text-white">
+            Keep it
+          </AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-mint font-bold text-ink hover:bg-mint/90"
+            onClick={onConfirm}
+          >
+            {actionLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function Today({
+  activeSession,
+  onExport,
+  onReset,
+  onRestart,
+  onResume,
+  onStart,
+  progress,
+}: {
+  activeSession: SessionRecord | null;
+  onExport: () => void;
+  onReset: () => void;
+  onRestart: () => void;
+  onResume: () => void;
+  onStart: () => void;
+  progress: ProgressRecord;
+}) {
+  const hasActiveSession = activeSession?.status === "in_progress";
+  const hasProgress = progress.completedSessions > 0;
+  const accuracy = progress.totalAttempts
+    ? Math.round((progress.totalCorrect / progress.totalAttempts) * 100)
+    : 0;
+
   return (
     <AppShell>
       <div className="mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
           <p className="eyebrow">Foundation · Session 1</p>
           <h1 className="mt-3 max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-0.04em] sm:text-5xl">
-            Train the link between two ideas.
+            {hasActiveSession
+              ? "Your memory session is waiting."
+              : hasProgress
+                ? "Keep strengthening the link."
+                : "Train the link between two ideas."}
           </h1>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -111,6 +203,42 @@ function Today({ onStart }: { onStart: () => void }) {
           About 5 minutes
         </div>
       </div>
+
+      {hasActiveSession && (
+        <section className="mb-5 flex flex-col gap-5 rounded-[24px] border border-amber-300/20 bg-amber-300/[0.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-200">
+              Unfinished session
+            </p>
+            <p className="mt-2 text-lg font-semibold text-white">
+              Continue from {activeSession.stage === "recall" ? "recall" : activeSession.stage} · step {activeSession.pairIndex + 1}
+            </p>
+            <p className="mt-1 text-sm text-slate-400">
+              Your answers and exact position were saved automatically.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              className="h-11 rounded-xl bg-mint font-bold text-ink hover:bg-mint/90"
+              onClick={onResume}
+            >
+              <Play aria-hidden="true" className="size-4 fill-current" />
+              Resume
+            </Button>
+            <ConfirmAction
+              actionLabel="Restart"
+              description="This removes the unfinished answers and starts the lesson again. Completed-session progress is unaffected."
+              onConfirm={onRestart}
+              title="Restart this session?"
+            >
+              <Button className="h-11 rounded-xl border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/10" variant="outline">
+                <RotateCcw aria-hidden="true" className="size-4" />
+                Restart
+              </Button>
+            </ConfirmAction>
+          </div>
+        </section>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-panel p-6 shadow-2xl shadow-black/20 sm:p-9">
@@ -121,26 +249,21 @@ function Today({ onStart }: { onStart: () => void }) {
                 <Link2 aria-hidden="true" className="size-6" />
               </span>
               <span className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-300">
-                Today
+                {hasProgress ? "Practice" : "Today"}
               </span>
             </div>
-
             <p className="text-sm font-semibold text-mint">Association</p>
             <h2 className="mt-2 max-w-xl text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
               Make ordinary pairs impossible to forget.
             </h2>
             <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300">
-              You’ll learn one technique, create three vivid mental links, then
-              retrieve each missing word without seeing the answer.
+              Learn one technique, create three vivid mental links, then retrieve
+              each missing word without seeing the answer.
             </p>
-
             <div className="mt-8 grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
               {["Learn the method", "Encode 3 pairs", "Recall from memory"].map(
                 (item, index) => (
-                  <div
-                    key={item}
-                    className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-4 py-3"
-                  >
+                  <div key={item} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-4 py-3">
                     <span className="grid size-6 shrink-0 place-items-center rounded-full bg-white/8 text-xs font-semibold text-mint">
                       {index + 1}
                     </span>
@@ -149,13 +272,12 @@ function Today({ onStart }: { onStart: () => void }) {
                 ),
               )}
             </div>
-
             <Button
               className="mt-8 h-12 rounded-xl bg-mint px-6 text-base font-bold text-ink hover:bg-mint/90"
-              onClick={onStart}
+              onClick={hasActiveSession ? onResume : onStart}
               size="lg"
             >
-              Begin association
+              {hasActiveSession ? "Resume association" : hasProgress ? "Practice again" : "Begin association"}
               <ArrowRight aria-hidden="true" className="size-4" />
             </Button>
           </div>
@@ -165,29 +287,68 @@ function Today({ onStart }: { onStart: () => void }) {
           <section className="rounded-[24px] border border-white/8 bg-white/[0.035] p-6">
             <p className="eyebrow">Your path</p>
             <div className="mt-7 flex items-center justify-between">
-              <span className="text-3xl font-semibold tracking-tight">1 of 6</span>
+              <span className="text-3xl font-semibold tracking-tight">
+                {hasProgress ? "1 complete" : "1 of 6"}
+              </span>
               <span className="text-sm text-slate-400">Foundation</span>
             </div>
-            <Progress className="mt-4 h-2 bg-white/8 [&>div]:bg-mint" value={16} />
+            <Progress className="mt-4 h-2 bg-white/8 [&>div]:bg-mint" value={hasProgress ? 16 : 4} />
             <p className="mt-4 text-sm leading-6 text-slate-400">
-              This session introduces the method and ends with a short recall check.
+              {hasProgress
+                ? "Your first technique is recorded on this device."
+                : "This session introduces the method and a short recall check."}
             </p>
           </section>
 
           <section className="rounded-[24px] border border-white/8 bg-white/[0.035] p-6">
             <div className="flex items-center justify-between">
-              <p className="eyebrow">Reviews</p>
-              <span className="grid size-8 place-items-center rounded-full bg-white/6 text-sm font-semibold text-slate-300">
-                0
-              </span>
+              <p className="eyebrow">Recall record</p>
+              <Trophy aria-hidden="true" className="size-5 text-amber-200" />
             </div>
-            <p className="mt-7 text-lg font-semibold">Nothing due yet</p>
-            <p className="mt-2 text-sm leading-6 text-slate-400">
-              Scheduled reviews will appear here as your practice grows.
-            </p>
+            {hasProgress ? (
+              <>
+                <div className="mt-7 flex items-end justify-between gap-4">
+                  <p className="text-3xl font-semibold">{accuracy}%</p>
+                  <p className="pb-1 text-sm text-slate-400">
+                    {progress.totalCorrect}/{progress.totalAttempts} recalled
+                  </p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  Best session: {progress.bestScore}/{PAIRS.length}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-7 text-lg font-semibold">No result yet</p>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  Finish the recall check to create your first record.
+                </p>
+              </>
+            )}
           </section>
         </aside>
       </div>
+
+      <footer className="mt-6 flex flex-col justify-between gap-4 border-t border-white/8 pt-6 text-sm text-slate-500 sm:flex-row sm:items-center">
+        <p>Your training data stays in this browser.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button className="border-white/8 bg-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white" onClick={onExport} size="sm" variant="outline">
+            <Download aria-hidden="true" className="size-4" />
+            Export data
+          </Button>
+          <ConfirmAction
+            actionLabel="Reset everything"
+            description="This permanently removes the unfinished session and all completed-session progress stored by MindBetter in this browser."
+            onConfirm={onReset}
+            title="Reset all MindBetter data?"
+          >
+            <Button className="border-white/8 bg-transparent text-slate-400 hover:bg-rose-400/10 hover:text-rose-200" size="sm" variant="outline">
+              <Trash2 aria-hidden="true" className="size-4" />
+              Reset data
+            </Button>
+          </ConfirmAction>
+        </div>
+      </footer>
     </AppShell>
   );
 }
@@ -197,7 +358,7 @@ function SessionFrame({ children, label, progress, onExit }: { children: React.R
     <AppShell>
       <div className="mx-auto max-w-3xl">
         <div className="mb-8 flex items-center gap-4">
-          <Button aria-label="Return to today" className="size-10 rounded-xl border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/10" onClick={onExit} size="icon" variant="outline">
+          <Button aria-label="Save and return to today" className="size-10 rounded-xl border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/10" onClick={onExit} size="icon" variant="outline">
             <ArrowLeft aria-hidden="true" className="size-4" />
           </Button>
           <div className="flex-1">
@@ -251,8 +412,8 @@ function Encode({ index, onNext, onExit }: { index: number; onNext: () => void; 
   );
 }
 
-function Recall({ answers, index, onAnswer, onExit }: { answers: string[]; index: number; onAnswer: (answer: string) => void; onExit: () => void }) {
-  const [answer, setAnswer] = useState(answers[index] ?? "");
+function Recall({ answers, index, onAnswer, onExit }: { answers: StoredAnswer[]; index: number; onAnswer: (answer: string) => void; onExit: () => void }) {
+  const [answer, setAnswer] = useState(answers[index]?.raw ?? "");
   const pair = PAIRS[index];
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (answer.trim()) onAnswer(answer); }
   return (
@@ -272,8 +433,8 @@ function Recall({ answers, index, onAnswer, onExit }: { answers: string[]; index
   );
 }
 
-function Results({ answers, onDone, onRetry }: { answers: string[]; onDone: () => void; onRetry: () => void }) {
-  const results = useMemo(() => PAIRS.map((pair, index) => ({ ...pair, answer: answers[index] ?? "", correct: normalizeAnswer(answers[index] ?? "") === normalizeAnswer(pair.target) })), [answers]);
+function Results({ answers, onDone, onRetry }: { answers: StoredAnswer[]; onDone: () => void; onRetry: () => void }) {
+  const results = useMemo(() => PAIRS.map((pair, index) => ({ ...pair, answer: answers[index]?.raw ?? "", correct: answers[index]?.normalized === normalizeAnswer(pair.target) })), [answers]);
   const correct = results.filter((result) => result.correct).length;
   return (
     <SessionFrame label="Complete" onExit={onDone} progress={100}>
@@ -294,7 +455,7 @@ function Results({ answers, onDone, onRetry }: { answers: string[]; onDone: () =
           ))}
         </div>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-          <Button className="h-12 rounded-xl bg-mint font-bold text-ink hover:bg-mint/90" onClick={onDone} size="lg">Finish session<Check aria-hidden="true" className="size-4" /></Button>
+          <Button className="h-12 rounded-xl bg-mint font-bold text-ink hover:bg-mint/90" onClick={onDone} size="lg">Save and finish<Check aria-hidden="true" className="size-4" /></Button>
           <Button className="h-12 rounded-xl border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/10" onClick={onRetry} size="lg" variant="outline"><RotateCcw aria-hidden="true" className="size-4" />Practice again</Button>
         </div>
       </section>
@@ -302,48 +463,190 @@ function Results({ answers, onDone, onRetry }: { answers: string[]; onDone: () =
   );
 }
 
+function LoadingState() {
+  return (
+    <AppShell>
+      <div className="mx-auto mt-16 max-w-md rounded-[24px] border border-white/8 bg-panel p-8 text-center">
+        <span className="mx-auto block size-8 animate-spin rounded-full border-2 border-white/10 border-t-mint" />
+        <p className="mt-5 font-semibold">Loading your practice</p>
+        <p className="mt-2 text-sm text-slate-400">Checking for a saved session on this device.</p>
+      </div>
+    </AppShell>
+  );
+}
+
 export function TrainingFlow() {
+  const [ready, setReady] = useState(false);
   const [stage, setStage] = useState<Stage>("today");
   const [pairIndex, setPairIndex] = useState(0);
-  const [answers, setAnswers] = useState<string[]>([]);
+  const [answers, setAnswers] = useState<StoredAnswer[]>([]);
+  const [session, setSession] = useState<SessionRecord | null>(null);
+  const [progress, setProgress] = useState<ProgressRecord>(EMPTY_PROGRESS);
 
   useEffect(() => {
-    const modelContext = (
-      document as Document & { modelContext?: ModelContext }
-    ).modelContext;
+    let active = true;
+    void loadMindBetterData()
+      .then((data) => {
+        if (!active) return;
+        setSession(data.session);
+        setProgress(data.progress);
+      })
+      .finally(() => {
+        if (active) setReady(true);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const modelContext = (document as Document & { modelContext?: ModelContext }).modelContext;
     if (!modelContext) return;
-
     const controller = new AbortController();
-    void modelContext
-      .registerTool(
-        {
-          name: "start_association_training",
-          description:
-            "Starts MindBetter's introductory association-memory lesson from the beginning.",
-          inputSchema: { type: "object", properties: {} },
-          async execute() {
-            setAnswers([]);
-            setPairIndex(0);
-            setStage("lesson");
-            return "The introductory association lesson is now open.";
-          },
+    void modelContext.registerTool(
+      {
+        name: "start_association_training",
+        description: "Starts MindBetter's introductory association-memory lesson from the beginning.",
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          await beginFreshSession();
+          return "The introductory association lesson is now open and will save automatically.";
         },
-        { signal: controller.signal },
-      )
-      .catch(() => undefined);
-
+      },
+      { signal: controller.signal },
+    ).catch(() => undefined);
     return () => controller.abort();
   }, []);
 
-  function reset(nextStage: Stage = "lesson") { setAnswers([]); setPairIndex(0); setStage(nextStage); }
-  function advanceEncoding() { if (pairIndex === PAIRS.length - 1) { setPairIndex(0); setStage("recall"); } else { setPairIndex((current) => current + 1); } }
-  function saveAnswer(answer: string) {
-    setAnswers((current) => { const next = [...current]; next[pairIndex] = answer; return next; });
-    if (pairIndex === PAIRS.length - 1) setStage("results"); else setPairIndex((current) => current + 1);
+  async function persistPosition(nextStage: TrainingStage, nextIndex: number, nextAnswers: StoredAnswer[], fresh = false) {
+    const now = new Date().toISOString();
+    const nextSession: SessionRecord = {
+      id: "association-intro",
+      version: 1,
+      status: "in_progress",
+      stage: nextStage,
+      pairIndex: nextIndex,
+      answers: nextAnswers,
+      startedAt: fresh || !session ? now : session.startedAt,
+      updatedAt: now,
+    };
+    setSession(nextSession);
+    await saveSession(nextSession);
   }
-  if (stage === "lesson") return <Lesson onExit={() => setStage("today")} onNext={() => setStage("encode")} />;
+
+  async function beginFreshSession() {
+    setAnswers([]);
+    setPairIndex(0);
+    setStage("lesson");
+    await persistPosition("lesson", 0, [], true);
+  }
+
+  function resumeSession() {
+    if (!session || session.status !== "in_progress") return;
+    setAnswers(session.answers);
+    setPairIndex(session.pairIndex);
+    setStage(session.stage);
+  }
+
+  async function advanceFromLesson() {
+    setPairIndex(0);
+    setStage("encode");
+    await persistPosition("encode", 0, answers);
+  }
+
+  async function advanceEncoding() {
+    if (pairIndex === PAIRS.length - 1) {
+      setPairIndex(0);
+      setStage("recall");
+      await persistPosition("recall", 0, answers);
+    } else {
+      const nextIndex = pairIndex + 1;
+      setPairIndex(nextIndex);
+      await persistPosition("encode", nextIndex, answers);
+    }
+  }
+
+  async function saveAnswer(answer: string) {
+    const nextAnswers = [...answers];
+    nextAnswers[pairIndex] = { raw: answer, normalized: normalizeAnswer(answer) };
+    setAnswers(nextAnswers);
+    if (pairIndex === PAIRS.length - 1) {
+      setStage("results");
+      await persistPosition("results", pairIndex, nextAnswers);
+    } else {
+      const nextIndex = pairIndex + 1;
+      setPairIndex(nextIndex);
+      await persistPosition("recall", nextIndex, nextAnswers);
+    }
+  }
+
+  async function retrySession() {
+    setAnswers([]);
+    setPairIndex(0);
+    setStage("encode");
+    await persistPosition("encode", 0, [], true);
+  }
+
+  async function finishSession() {
+    const score = scoreAnswers(answers, TARGETS);
+    const now = new Date().toISOString();
+    const nextProgress: ProgressRecord = {
+      version: 1,
+      completedSessions: progress.completedSessions + 1,
+      totalCorrect: progress.totalCorrect + score,
+      totalAttempts: progress.totalAttempts + PAIRS.length,
+      bestScore: Math.max(progress.bestScore, score),
+      latestScore: score,
+      lastCompletedAt: now,
+    };
+    const completedSession: SessionRecord = {
+      id: "association-intro",
+      version: 1,
+      status: "completed",
+      stage: "results",
+      pairIndex: PAIRS.length - 1,
+      answers,
+      startedAt: session?.startedAt ?? now,
+      updatedAt: now,
+      score,
+    };
+    await saveCompletion(completedSession, nextProgress);
+    setProgress(nextProgress);
+    setSession(completedSession);
+    setStage("today");
+  }
+
+  async function resetAllData() {
+    await clearMindBetterData();
+    setProgress(EMPTY_PROGRESS);
+    setSession(null);
+    setAnswers([]);
+    setPairIndex(0);
+    setStage("today");
+  }
+
+  async function exportData() {
+    const content = await exportMindBetterData();
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mindbetter-export-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (!ready) return <LoadingState />;
+  if (stage === "lesson") return <Lesson onExit={() => setStage("today")} onNext={advanceFromLesson} />;
   if (stage === "encode") return <Encode index={pairIndex} onExit={() => setStage("today")} onNext={advanceEncoding} />;
   if (stage === "recall") return <Recall answers={answers} index={pairIndex} key={pairIndex} onAnswer={saveAnswer} onExit={() => setStage("today")} />;
-  if (stage === "results") return <Results answers={answers} onDone={() => reset("today")} onRetry={() => reset("encode")} />;
-  return <Today onStart={() => setStage("lesson")} />;
+  if (stage === "results") return <Results answers={answers} onDone={finishSession} onRetry={retrySession} />;
+  return (
+    <Today
+      activeSession={session?.status === "in_progress" ? session : null}
+      onExport={exportData}
+      onReset={resetAllData}
+      onRestart={beginFreshSession}
+      onResume={resumeSession}
+      onStart={beginFreshSession}
+      progress={progress}
+    />
+  );
 }
