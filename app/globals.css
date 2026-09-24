@@ -118,6 +118,29 @@ input {
   font-size: clamp(1.35rem, 4vw, 1.75rem);
 }
 
+.stat-chip {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: center;
+  column-gap: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 0.75rem 0.5rem;
+  color: #f8fafc;
+}
+
+.stat-chip span {
+  grid-column: 1 / -1;
+  margin-top: 0.2rem;
+  color: #64748b;
+  font-size: 0.7rem;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -128,4 +151,3 @@ input {
     animation-iteration-count: 1 !important;
   }
 }
-

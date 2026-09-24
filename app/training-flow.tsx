@@ -31,15 +31,22 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { CourseMap } from "./course-map";
+import { GuidedLesson } from "./guided-lesson";
+import { FOUNDATION_CONTENT, getLesson } from "@/lib/curriculum";
 import {
+  clearGuidedSession,
   clearMindBetterData,
   EMPTY_PROGRESS,
   exportMindBetterData,
   loadMindBetterData,
   normalizeAnswer,
   saveCompletion,
+  saveGuidedSession,
+  saveProgress,
   saveSession,
   scoreAnswers,
+  type GuidedSessionRecord,
   type ProgressRecord,
   type SessionRecord,
   type StoredAnswer,
@@ -162,6 +169,8 @@ function ConfirmAction({
   );
 }
 
+// Kept temporarily as a reference while the course map replaces the original dashboard.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Today({
   activeSession,
   onExport,
@@ -481,6 +490,8 @@ export function TrainingFlow() {
   const [pairIndex, setPairIndex] = useState(0);
   const [answers, setAnswers] = useState<StoredAnswer[]>([]);
   const [session, setSession] = useState<SessionRecord | null>(null);
+  const [guidedSession, setGuidedSession] = useState<GuidedSessionRecord | null>(null);
+  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressRecord>(EMPTY_PROGRESS);
 
   useEffect(() => {
@@ -489,6 +500,7 @@ export function TrainingFlow() {
       .then((data) => {
         if (!active) return;
         setSession(data.session);
+        setGuidedSession(data.guidedSession);
         setProgress(data.progress);
       })
       .finally(() => {
@@ -514,6 +526,8 @@ export function TrainingFlow() {
       { signal: controller.signal },
     ).catch(() => undefined);
     return () => controller.abort();
+    // WebMCP registration is intentionally scoped to this mounted page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function persistPosition(nextStage: TrainingStage, nextIndex: number, nextAnswers: StoredAnswer[], fresh = false) {
@@ -589,13 +603,25 @@ export function TrainingFlow() {
     const score = scoreAnswers(answers, TARGETS);
     const now = new Date().toISOString();
     const nextProgress: ProgressRecord = {
-      version: 1,
+      ...progress,
+      version: 2,
       completedSessions: progress.completedSessions + 1,
       totalCorrect: progress.totalCorrect + score,
       totalAttempts: progress.totalAttempts + PAIRS.length,
       bestScore: Math.max(progress.bestScore, score),
       latestScore: score,
       lastCompletedAt: now,
+      completedLessonIds: Array.from(
+        new Set([
+          ...progress.completedLessonIds,
+          "foundation-baseline",
+          "foundation-attention",
+          "foundation-association",
+        ]),
+      ),
+      xp: progress.xp + (progress.completedLessonIds.includes("foundation-association") ? 0 : 15),
+      streak: nextStreak(progress.lastActivityDate, progress.streak),
+      lastActivityDate: localDateKey(),
     };
     const completedSession: SessionRecord = {
       id: "association-intro",
@@ -618,6 +644,8 @@ export function TrainingFlow() {
     await clearMindBetterData();
     setProgress(EMPTY_PROGRESS);
     setSession(null);
+    setGuidedSession(null);
+    setSelectedLessonId(null);
     setAnswers([]);
     setPairIndex(0);
     setStage("today");
@@ -633,20 +661,97 @@ export function TrainingFlow() {
     URL.revokeObjectURL(url);
   }
 
+  async function openLesson(lessonId: string) {
+    if (lessonId === "foundation-association") {
+      if (session?.status === "in_progress") resumeSession();
+      else await beginFreshSession();
+      return;
+    }
+
+    if (!FOUNDATION_CONTENT[lessonId]) return;
+    const nextGuidedSession: GuidedSessionRecord =
+      guidedSession?.lessonId === lessonId
+        ? guidedSession
+        : { version: 1, lessonId, pageIndex: 0, updatedAt: new Date().toISOString() };
+    setGuidedSession(nextGuidedSession);
+    setSelectedLessonId(lessonId);
+    await saveGuidedSession(nextGuidedSession);
+  }
+
+  async function persistGuidedPage(lessonId: string, pageIndex: number) {
+    const nextGuidedSession: GuidedSessionRecord = {
+      version: 1,
+      lessonId,
+      pageIndex,
+      updatedAt: new Date().toISOString(),
+    };
+    setGuidedSession(nextGuidedSession);
+    await saveGuidedSession(nextGuidedSession);
+  }
+
+  async function completeGuidedLesson(lessonId: string) {
+    const lesson = getLesson(lessonId);
+    if (!lesson) return;
+    const alreadyComplete = progress.completedLessonIds.includes(lessonId);
+    const nextProgress: ProgressRecord = {
+      ...progress,
+      completedLessonIds: Array.from(new Set([...progress.completedLessonIds, lessonId])),
+      xp: progress.xp + (alreadyComplete ? 0 : lesson.xp),
+      streak: nextStreak(progress.lastActivityDate, progress.streak),
+      lastActivityDate: localDateKey(),
+    };
+    setProgress(nextProgress);
+    setGuidedSession(null);
+    await Promise.all([saveProgress(nextProgress), clearGuidedSession()]);
+  }
+
   if (!ready) return <LoadingState />;
   if (stage === "lesson") return <Lesson onExit={() => setStage("today")} onNext={advanceFromLesson} />;
   if (stage === "encode") return <Encode index={pairIndex} onExit={() => setStage("today")} onNext={advanceEncoding} />;
   if (stage === "recall") return <Recall answers={answers} index={pairIndex} key={pairIndex} onAnswer={saveAnswer} onExit={() => setStage("today")} />;
   if (stage === "results") return <Results answers={answers} onDone={finishSession} onRetry={retrySession} />;
+
+  const selectedLesson = selectedLessonId ? getLesson(selectedLessonId) : undefined;
+  const selectedPages = selectedLessonId ? FOUNDATION_CONTENT[selectedLessonId] : undefined;
+  if (selectedLesson && selectedPages) {
+    return (
+      <AppShell>
+        <GuidedLesson
+          alreadyComplete={progress.completedLessonIds.includes(selectedLesson.id)}
+          initialPage={guidedSession?.lessonId === selectedLesson.id ? guidedSession.pageIndex : 0}
+          lesson={selectedLesson}
+          onComplete={() => completeGuidedLesson(selectedLesson.id)}
+          onExit={() => setSelectedLessonId(null)}
+          onPageChange={(pageIndex) => void persistGuidedPage(selectedLesson.id, pageIndex)}
+          pages={selectedPages}
+        />
+      </AppShell>
+    );
+  }
+
   return (
-    <Today
-      activeSession={session?.status === "in_progress" ? session : null}
-      onExport={exportData}
-      onReset={resetAllData}
-      onRestart={beginFreshSession}
-      onResume={resumeSession}
-      onStart={beginFreshSession}
-      progress={progress}
-    />
+    <AppShell>
+      <CourseMap
+        onExport={() => void exportData()}
+        onReset={() => void resetAllData()}
+        onSelectLesson={(lessonId) => void openLesson(lessonId)}
+        progress={progress}
+      />
+    </AppShell>
   );
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function nextStreak(lastActivityDate: string | null, currentStreak: number) {
+  const today = localDateKey();
+  if (lastActivityDate === today) return Math.max(1, currentStreak);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return lastActivityDate === localDateKey(yesterday) ? currentStreak + 1 : 1;
 }
